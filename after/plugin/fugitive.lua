@@ -28,3 +28,9 @@ vim.keymap.set("n", "<leader>gP", function()
     vim.cmd.Git("push")
 end, { desc = "git add + commit + push" })
 
+-- git branch
+vim.keymap.set("n", "<leader>gb", function()
+    vim.cmd.Git("branch")
+end, { decs = "git branch" })
+
+
