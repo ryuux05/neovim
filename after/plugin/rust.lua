@@ -8,7 +8,7 @@ vim.api.nvim_create_autocmd("FileType", {
       settings = {
         ["rust-analyzer"] = {
           diagnostics = {
-            disabled = { "unliked-file" },
+            disabled = { "unlinked-file" },
           },
           checkOnSave = true,
           check = {
