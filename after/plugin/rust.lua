@@ -7,6 +7,9 @@ vim.api.nvim_create_autocmd("FileType", {
       root_dir = vim.fs.root(0, { "Cargo.toml", "rust-project.json", ".git" }),
       settings = {
         ["rust-analyzer"] = {
+          diagnostics = {
+            disabled = { "unliked-file" },
+          },
           checkOnSave = true,
           check = {
             command = "clippy", -- or "check" if you want faster
