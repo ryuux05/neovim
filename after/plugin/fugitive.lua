@@ -25,12 +25,16 @@ vim.keymap.set("n", "<leader>gP", function()
     local msg = vim.fn.input("Commit messages: ")
     if msg == nil or msg == "" then return end
     vim.cmd.Git('commit -S -m "' ..msg:gsub('"', '\\"') ..'"')
-    vim.cmd.Git("push")
+        
+    local branch = vim.fn.input("Branch: ")
+    if branch == nil or branch == "" then return end
+    vim.cmd.Git('push origin "' ..branch:gsub('"', '\\"') ..'"')
+
 end, { desc = "git add + commit + push" })
 
 -- git branch
 vim.keymap.set("n", "<leader>gb", function()
     vim.cmd.Git("branch")
-end, { decs = "git branch" })
+end, { desc = "git branch" })
 
 
