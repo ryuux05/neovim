@@ -14,8 +14,10 @@ end, { desc = "git commit -S -m" })
 
 -- git push
 vim.keymap.set("n", "<leader>gp", function()
-    vim.cmd.Git("push")
-end, { desc = "git push" })
+    local branch = vim.fn.input("Branch: ")
+    if branch == nil or branch == "" then return end
+    vim.cmd.Git('push origin "' ..branch:gsub('"', '\\"') ..'"')
+end, { desc = "git push origin" })
 
 -- add + commit + push (commit will open the commit message editor)
 vim.keymap.set("n", "<leader>gP", function()
