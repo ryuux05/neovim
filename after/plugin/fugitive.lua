@@ -24,10 +24,11 @@ vim.keymap.set("n", "<leader>gP", function()
     vim.cmd.Git("add .")
     local msg = vim.fn.input("Commit messages: ")
     if msg == nil or msg == "" then return end
-    vim.cmd.Git('commit -S -m "' ..msg:gsub('"', '\\"') ..'"')
-        
     local branch = vim.fn.input("Branch: ")
     if branch == nil or branch == "" then return end
+
+    vim.cmd.Git('commit -S -m "' ..msg:gsub('"', '\\"') ..'"')
+        
     vim.cmd.Git('push origin "' ..branch:gsub('"', '\\"') ..'"')
 
 end, { desc = "git add + commit + push" })
