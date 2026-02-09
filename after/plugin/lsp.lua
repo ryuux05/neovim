@@ -1,21 +1,3 @@
--- Auto-start gopls for Go files
-vim.api.nvim_create_autocmd('FileType', {
-  pattern = { 'go', 'gomod', 'gowork', 'gotmpl' },
-  callback = function()
-    vim.lsp.start({
-      name = 'gopls',
-      cmd = { 'gopls' },
-      root_dir = vim.fs.root(0, { 'go.mod', 'go.work', '.git' }),
-      settings = {
-        gopls = {
-          analyses = { unusedparams = true },
-          staticcheck = true,
-        },
-      },
-    })
-  end,
-})
-
 -- Keymaps on LSP attach
 vim.api.nvim_create_autocmd('LspAttach', {
   callback = function(args)

@@ -45,6 +45,7 @@ use ( 'tpope/vim-fugitive' )
 -- Mason for managing LSP servers
 use { 'williamboman/mason.nvim' }
 use { 'williamboman/mason-lspconfig.nvim' }
+use { "neovim/nvim-lspconfig" }
 
 -- Autocompletion
 use { 'hrsh7th/nvim-cmp' }

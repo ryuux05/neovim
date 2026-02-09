@@ -1,0 +1,32 @@
+-- Define once at top-level if you use cmp
+local capabilities = vim.lsp.protocol.make_client_capabilities()
+local ok, cmp_lsp = pcall(require, "cmp_nvim_lsp")
+if ok then
+  capabilities = cmp_lsp.default_capabilities(capabilities)
+end
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "rust" },
+  callback = function(args)
+    local root = vim.fs.root(args.buf, { "Cargo.toml", "rust-project.json", ".git" })
+    if not root then
+      -- If this happens, the buffer is usually unsaved or not under Cargo.toml
+      return
+    end
+
+    vim.lsp.start({
+      name = "rust-analyzer",
+      cmd = { "rust-analyzer" },
+      root_dir = root,
+      capabilities = capabilities,
+      settings = {
+        ["rust-analyzer"] = {
+          diagnostics = { disabled = { "unlinked-file" } }, -- optional
+          checkOnSave = true,
+          check = { command = "clippy" },
+          cargo = { allFeatures = true },
+        },
+      },
+    }, { bufnr = args.buf })
+  end,
+})
