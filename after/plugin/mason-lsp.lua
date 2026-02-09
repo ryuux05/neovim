@@ -1,7 +1,12 @@
+-- ~/.config/nvim/after/plugin/mason-lsp.lua
+-- Compatible version (no setup_handlers), and avoids trying to treat tools like "stylua" as LSP servers.
+
 require("mason").setup()
 
-require("mason-lspconfig").setup({
-  ensure_installed = { "gopls", "rust_analyzer" },
+local mlsp = require("mason-lspconfig")
+mlsp.setup({
+  -- LSP servers only (NOT formatters like stylua)
+  ensure_installed = { "gopls", "rust_analyzer", "lua_ls" },
 })
 
 local capabilities = vim.lsp.protocol.make_client_capabilities()
@@ -10,42 +15,6 @@ if ok then
   capabilities = cmp_lsp.default_capabilities(capabilities)
 end
 
-local lspconfig = require("lspconfig")
-
-require("mason-lspconfig").setup_handlers({
-  function(server_name)
-    lspconfig[server_name].setup({
-      capabilities = capabilities,
-    })
-  end,
-
-  -- Rust custom settings
-  ["rust_analyzer"] = function()
-    lspconfig.rust_analyzer.setup({
-      capabilities = capabilities,
-      settings = {
-        ["rust-analyzer"] = {
-          checkOnSave = true,
-          check = { command = "clippy" },
-          cargo = { allFeatures = true },
-        },
-      },
-    })
-  end,
-
-  -- Go custom settings
-  ["gopls"] = function()
-    lspconfig.gopls.setup({
-      capabilities = capabilities,
-      settings = {
-        gopls = {
-          analyses = { unusedparams = true },
-          staticcheck = true,
-        },
-      },
-    })
-  end,
-})
 
 vim.diagnostic.config({
   virtual_text = true,

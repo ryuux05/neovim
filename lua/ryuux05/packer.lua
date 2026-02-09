@@ -43,9 +43,9 @@ use ( 'mbbill/undotree' )
 use ( 'tpope/vim-fugitive' )
 
 -- Mason for managing LSP servers
+use { "neovim/nvim-lspconfig" }
 use { 'williamboman/mason.nvim' }
 use { 'williamboman/mason-lspconfig.nvim' }
-use { "neovim/nvim-lspconfig" }
 
 -- Autocompletion
 use { 'hrsh7th/nvim-cmp' }
