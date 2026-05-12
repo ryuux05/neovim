@@ -7,6 +7,20 @@ return require('packer').startup(function(use)
   -- Packer can manage itself
   use 'wbthomason/packer.nvim'
 
+    use({
+      "iamcco/markdown-preview.nvim",
+      run = "cd app && npm install",
+      config = function()
+        vim.g.mkdp_browserfunc = "OpenMarkdownPreview"
+
+        vim.cmd([[
+        function OpenMarkdownPreview(url)
+          execute "silent !open -na 'Arc' --args --new-window " . a:url
+        endfunction
+        ]])
+      end,
+    })
+
   use {
 	'nvim-telescope/telescope.nvim', tag = 'v0.2.0',
 	-- or				, branch = '0.2.x'
