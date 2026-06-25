@@ -35,15 +35,20 @@ return require('packer').startup(function(use)
 	end
   })
 
-  use {
+use {
   'nvim-treesitter/nvim-treesitter',
-  tag = 'v0.9.3',
-  run = function()
-    require("nvim-treesitter.install").update({ with_sync = true })
-  end,
+  branch = 'master',
   config = function()
     require('nvim-treesitter.configs').setup {
-      ensure_installed = { "c", "lua", "vim", "go", "typescript", "rust", "javascript" },
+      ensure_installed = {
+        "c",
+        "lua",
+        "vim",
+        "go",
+        "typescript",
+        "rust",
+        "javascript",
+      },
       sync_install = false,
       auto_install = true,
       highlight = {
@@ -53,7 +58,7 @@ return require('packer').startup(function(use)
   end
 }
 
-use ( 'nvim-treesitter/playground' )
+-- use ( 'nvim-treesitter/playground' )
 use ( 'theprimeagen/harpoon' )
 use ( 'mbbill/undotree' )
 use ( 'tpope/vim-fugitive' )
