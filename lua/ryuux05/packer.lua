@@ -38,7 +38,9 @@ return require('packer').startup(function(use)
   use {
   'nvim-treesitter/nvim-treesitter',
   tag = 'v0.9.3',
-  run = ':TSUpdate',
+  run = function()
+    require("nvim-treesitter.install").update({ with_sync = true })
+  end,
   config = function()
     require('nvim-treesitter.configs').setup {
       ensure_installed = { "c", "lua", "vim", "go", "typescript", "rust", "javascript" },
