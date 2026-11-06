@@ -21,6 +21,16 @@ return require('packer').startup(function(use)
       end,
     })
 
+    use {
+  "ryuux05/nvmd",
+  run = "sh scripts/install-binary.sh",
+  config = function()
+    require("nvmd").setup({
+      live_reload = true,
+      debounce_ms = 150,
+    })
+  end,
+}
   use {
 	'nvim-telescope/telescope.nvim', tag = 'v0.2.0',
 	-- or				, branch = '0.2.x'

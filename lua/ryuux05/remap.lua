@@ -47,3 +47,5 @@ vim.keymap.set("n", "E", "]d")
 vim.keymap.set("n", "<leader>mp", "<cmd>MarkdownPreview<CR>")
 vim.keymap.set("n", "<leader>ms", "<cmd>MarkdownPreviewStop<CR>")
 vim.keymap.set("n", "<leader>mt", "<cmd>MarkdownPreviewToggle<CR>")
+
+vim.keymap.set("n", "<leader>md", "<cmd>NvmdOpen<CR>")
