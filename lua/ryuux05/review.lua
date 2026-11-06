@@ -70,42 +70,81 @@ local function run(chat, prompt, cb)
 end
 
 local prompt_window
+local ns = vim.api.nvim_create_namespace("review_ai")
+local panel = { busy = 0, big = false }
 
-local function send(chat, question)
-  chat.busy = true
-  local name = names[chat.agent]
-  vim.api.nvim_buf_set_lines(chat.buf, -1, -1, false, { "## You", "", question, "", "## " .. name, "", "_thinking…_" })
-  local pending = vim.api.nvim_buf_line_count(chat.buf)
-  run(chat, chat.context and (chat.context .. "\n\nQuestion: " .. question) or question, function(answer, err)
-    chat.busy = false
-    if answer then
-      chat.started, chat.context = true, nil
-    end
-    local text = answer and vim.trim(answer) or ("**Error:** " .. vim.trim(err or "unknown"))
-    if not vim.api.nvim_buf_is_valid(chat.buf) then return end
-    vim.api.nvim_buf_set_lines(chat.buf, pending - 1, pending, false, vim.split(text .. "\n", "\n"))
-  end)
+local function panel_layout()
+  local width, height = math.min(60, vim.o.columns - 4), 10
+  if panel.big then
+    width, height = math.floor(vim.o.columns * 0.8), math.floor(vim.o.lines * 0.8)
+    return { row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2), width = width, height = height }
+  end
+  return { row = vim.o.lines - height - 4, col = vim.o.columns - width - 2, width = width, height = height }
 end
 
-local function answer_window(chat)
-  if chat.win and vim.api.nvim_win_is_valid(chat.win) then return vim.api.nvim_set_current_win(chat.win) end
-  if not chat.buf then
-    chat.buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[chat.buf].filetype = "markdown"
-    vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = chat.buf })
-    vim.keymap.set("n", "i", function()
-      if chat.busy then return vim.notify(names[chat.agent] .. " is still thinking") end
-      prompt_window(chat)
-    end, { buffer = chat.buf })
-  end
-  local width, height = math.floor(vim.o.columns * 0.45), math.floor(vim.o.lines * 0.8)
-  chat.win = vim.api.nvim_open_win(chat.buf, true, {
-    relative = "editor", row = 1, col = vim.o.columns - width - 2, width = width, height = height,
-    border = "rounded", title = " " .. names[chat.agent] .. " ▸ " .. chat.label .. " ",
-    footer = " i: follow-up · q: close ", footer_pos = "center",
+local function panel_title()
+  local status = panel.busy > 0 and "thinking…" or "done"
+  return " " .. names[panel.chat.agent] .. " ▸ " .. panel.chat.label .. " · " .. status .. " "
+end
+
+local function panel_open() return panel.win and vim.api.nvim_win_is_valid(panel.win) end
+
+local function show_panel(focus)
+  local config = vim.tbl_extend("force", panel_layout(), {
+    relative = "editor", title = panel_title(), footer_pos = "center",
+    footer = " i: follow-up · m: " .. (panel.big and "minimize" or "maximize") .. " · q: close ",
   })
-  vim.wo[chat.win].wrap = true
-  vim.wo[chat.win].linebreak = true
+  if panel_open() then
+    vim.api.nvim_win_set_config(panel.win, config)
+    if focus then vim.api.nvim_set_current_win(panel.win) end
+    return
+  end
+  panel.win = vim.api.nvim_open_win(panel.buf, focus, vim.tbl_extend("force", config, { border = "rounded" }))
+  vim.wo[panel.win].wrap = true
+  vim.wo[panel.win].linebreak = true
+end
+
+local function panel_buf()
+  if panel.buf and vim.api.nvim_buf_is_valid(panel.buf) then return panel.buf end
+  panel.buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[panel.buf].filetype = "markdown"
+  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = panel.buf })
+  vim.keymap.set("n", "m", function()
+    panel.big = not panel.big
+    show_panel(true)
+  end, { buffer = panel.buf })
+  vim.keymap.set("n", "i", function()
+    if panel.chat.busy then return vim.notify(names[panel.chat.agent] .. " is still thinking") end
+    prompt_window(panel.chat)
+  end, { buffer = panel.buf })
+  return panel.buf
+end
+
+local function send(chat, question)
+  local buf = panel_buf()
+  local lines = { "## You", "", question, "", "## " .. names[chat.agent], "", "_thinking…_" }
+  if not chat.asked then lines = vim.list_extend({ "# " .. names[chat.agent] .. " ▸ " .. chat.label, "" }, lines) end
+  local empty = vim.api.nvim_buf_line_count(buf) == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
+  vim.api.nvim_buf_set_lines(buf, empty and 0 or -1, -1, false, empty and lines or vim.list_extend({ "" }, lines))
+  local last = vim.api.nvim_buf_line_count(buf)
+  local mark = vim.api.nvim_buf_set_extmark(buf, ns, last - 1, 0, {})
+  chat.asked, chat.busy, panel.chat, panel.busy = true, true, chat, panel.busy + 1
+  show_panel(false)
+  vim.api.nvim_win_set_cursor(panel.win, { last, 0 })
+  run(chat, chat.context and (chat.context .. "\n\nQuestion: " .. question) or question, function(answer, err)
+    chat.busy, panel.busy = false, panel.busy - 1
+    if answer then chat.started, chat.context = true, nil end
+    if not vim.api.nvim_buf_is_valid(buf) then return end
+    local row = vim.api.nvim_buf_get_extmark_by_id(buf, ns, mark, {})[1]
+    vim.api.nvim_buf_del_extmark(buf, ns, mark)
+    local text = answer and vim.trim(answer) or ("**Error:** " .. vim.trim(err or "unknown"))
+    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, vim.split(text, "\n"))
+    if panel_open() then
+      vim.api.nvim_win_set_config(panel.win, { title = panel_title() })
+      vim.api.nvim_win_set_cursor(panel.win, { row + 1, 0 })
+      vim.api.nvim_win_call(panel.win, function() vim.cmd("normal! zt") end)
+    end
+  end)
 end
 
 prompt_window = function(chat)
@@ -114,7 +153,7 @@ prompt_window = function(chat)
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "cursor", row = 1, col = 0, width = math.min(80, vim.o.columns - 4), height = 3,
     border = "rounded", title = title(), footer_pos = "center",
-    footer = chat.buf and " Enter: send · Esc: cancel " or " Tab: Claude/Codex · Enter: send · Esc: cancel ",
+    footer = chat.asked and " Enter: send · Esc: cancel " or " Tab: Claude/Codex · Enter: send · Esc: cancel ",
   })
   vim.wo[win].wrap = true
   vim.cmd.startinsert()
@@ -125,13 +164,11 @@ prompt_window = function(chat)
   vim.keymap.set({ "i", "n" }, "<CR>", function()
     local question = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
     close()
-    if question == "" then return end
-    answer_window(chat)
-    send(chat, question)
+    if question ~= "" then send(chat, question) end
   end, { buffer = buf })
   vim.keymap.set("n", "<Esc>", close, { buffer = buf })
   vim.keymap.set("n", "q", close, { buffer = buf })
-  if not chat.buf then
+  if not chat.asked then
     vim.keymap.set({ "i", "n" }, "<Tab>", function()
       chat.agent = chat.agent == "claude" and "codex" or "claude"
       vim.api.nvim_win_set_config(win, { title = title() })
@@ -162,6 +199,10 @@ vim.api.nvim_create_autocmd("BufWinEnter", { group = group, pattern = "octo://*/
     vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
     ask(a.buf, math.min(l1, l2), math.max(l1, l2))
   end, { buffer = a.buf, desc = "Ask AI about selection" })
+  vim.keymap.set("n", "ga", function()
+    if not panel.chat then return vim.notify("No AI answers yet") end
+    show_panel(true)
+  end, { buffer = a.buf, desc = "Go to AI answers" })
 end })
 
 vim.api.nvim_create_autocmd("FileType", { group = group, pattern = "octo_panel", callback = function(a)
