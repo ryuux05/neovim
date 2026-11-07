@@ -58,9 +58,9 @@ vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = set_hl })
 -- Vim colors lines that exist only on the left as DiffAdd, so each side gets its own colors.
 vim.api.nvim_create_autocmd("BufWinEnter", { group = group, pattern = "octo://*/review/*/file/*", callback = function(a)
   if a.match:find("/file/LEFT/", 1, true) then
-    vim.wo.winhighlight = "DiffAdd:ReviewDel,DiffChange:ReviewDel,DiffText:ReviewDelText"
+    vim.wo[0][0].winhighlight = "DiffAdd:ReviewDel,DiffChange:ReviewDel,DiffText:ReviewDelText"
   else
-    vim.wo.winhighlight = "DiffAdd:ReviewAdd,DiffChange:ReviewAdd,DiffText:ReviewAddText"
+    vim.wo[0][0].winhighlight = "DiffAdd:ReviewAdd,DiffChange:ReviewAdd,DiffText:ReviewAddText"
   end
   ask.attach(a.buf, review_chat)
 end })

@@ -194,8 +194,8 @@ end
 local function show_panel(focus)
   if not panel_open() then
     panel.win = vim.api.nvim_open_win(panel_buf(), focus, vim.tbl_extend("force", panel_config(), { border = "rounded" }))
-    vim.wo[panel.win].wrap = true
-    vim.wo[panel.win].linebreak = true
+    vim.wo[panel.win][0].wrap = true
+    vim.wo[panel.win][0].linebreak = true
   elseif focus then
     vim.api.nvim_set_current_win(panel.win)
   end
@@ -240,7 +240,7 @@ prompt_window = function(chat)
     relative = "cursor", row = 1, col = 0, width = math.min(80, vim.o.columns - 4), height = 3,
     border = "rounded", title = title(), footer = " " .. table.concat(hints, " · ") .. " ", footer_pos = "center",
   })
-  vim.wo[win].wrap = true
+  vim.wo[win][0].wrap = true
   vim.cmd.startinsert()
   local function close()
     vim.cmd.stopinsert()
