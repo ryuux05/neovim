@@ -47,24 +47,10 @@ return require('packer').startup(function(use)
 
 use {
   'nvim-treesitter/nvim-treesitter',
-  branch = 'master',
+  branch = 'main',
+  run = ':TSUpdate',
   config = function()
-    require('nvim-treesitter.configs').setup {
-      ensure_installed = {
-        "c",
-        "lua",
-        "vim",
-        "go",
-        "typescript",
-        "rust",
-        "javascript",
-      },
-      sync_install = false,
-      auto_install = true,
-      highlight = {
-        enable = true,
-      },
-    }
+    require('ryuux05.treesitter')
   end
 }
 

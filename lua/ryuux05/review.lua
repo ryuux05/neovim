@@ -37,6 +37,7 @@ local function review_chat(buf, l1, l2)
   local side = props.split == "LEFT" and "base version (before the PR)" or "PR version (after the change)"
   return {
     review = true,
+    source = { path = vim.api.nvim_buf_get_name(buf), l1 = l1, l2 = l2 },
     label = ask.label(file.path, l1, l2),
     context = table.concat({
       string.format("I'm reviewing GitHub pull request %s.", pr),

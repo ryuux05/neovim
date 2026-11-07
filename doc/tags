@@ -1,0 +1,6 @@
+:AgentDefault	agent-panel.txt	/*:AgentDefault*
+:AgentPanel	agent-panel.txt	/*:AgentPanel*
+agent-panel	agent-panel.txt	/*agent-panel*
+agent-panel-state	agent-panel.txt	/*agent-panel-state*
+agent-panel-tests	agent-panel.txt	/*agent-panel-tests*
+agent-panel.txt	agent-panel.txt	/*agent-panel.txt*
