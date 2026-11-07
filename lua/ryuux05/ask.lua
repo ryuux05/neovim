@@ -6,7 +6,7 @@ local marks = vim.api.nvim_create_namespace("ask_marks")
 local names = { claude = "Claude", codex = "Codex" }
 local chats = {}
 local snaps = {}
-local panel = { big = false }
+local panel = { big = false, wins = {} }
 local prompt_window
 
 local function set_hl()
@@ -93,13 +93,22 @@ local function refresh()
   end
 end
 
-local function panel_open() return panel.win and vim.api.nvim_win_is_valid(panel.win) end
+local function panel_win()
+  local win = panel.wins[vim.api.nvim_get_current_tabpage()]
+  return win and vim.api.nvim_win_is_valid(win) and win or nil
+end
+
+local function is_float(win) return vim.api.nvim_win_get_config(win).relative ~= "" end
+
+local function panel_title()
+  local busy = #vim.tbl_filter(function(c) return c.busy end, chats)
+  return string.format(" AI · %d session%s · %s ", #chats, #chats == 1 and "" or "s", busy > 0 and busy .. " working…" or "done")
+end
 
 local function panel_config()
-  local busy = #vim.tbl_filter(function(c) return c.busy end, chats)
   local config = {
     relative = "editor", width = math.min(60, vim.o.columns - 4), height = 10, footer_pos = "center",
-    title = string.format(" AI · %d session%s · %s ", #chats, #chats == 1 and "" or "s", busy > 0 and busy .. " working…" or "done"),
+    title = panel_title(),
     footer = " i ask · ]] [[ jump · m " .. (panel.big and "min" or "max") .. " · q delete · Esc hide ",
   }
   if panel.big then
@@ -111,6 +120,13 @@ local function panel_config()
   return config
 end
 
+local function update_panel(win)
+  -- Window options follow the buffer, so a float would inherit the docked panel's winbar.
+  local float = is_float(win)
+  vim.wo[win][0].winbar = float and "" or panel_title() .. "│ i ask · ]] [[ jump · q delete · Esc hide"
+  if float then vim.api.nvim_win_set_config(win, panel_config()) end
+end
+
 local function chat_in_panel(row)
   for _, c in ipairs(chats) do
     if c.first and c.first <= row and row <= c.last then return c end
@@ -118,13 +134,15 @@ local function chat_in_panel(row)
 end
 
 local function reveal(row)
-  if not panel_open() then return end
-  vim.api.nvim_win_set_cursor(panel.win, { row, 0 })
-  vim.api.nvim_win_call(panel.win, function() vim.cmd("normal! zt") end)
+  local win = panel_win()
+  if not win then return end
+  vim.api.nvim_win_set_cursor(win, { row, 0 })
+  vim.api.nvim_win_call(win, function() vim.cmd("normal! zt") end)
 end
 
 local function render()
-  local row = panel_open() and vim.api.nvim_win_get_cursor(panel.win)[1]
+  local win = panel_win()
+  local row = win and vim.api.nvim_win_get_cursor(win)[1]
   local keep = row and chat_in_panel(row)
   local offset = keep and row - keep.first
   local lines = {}
@@ -141,10 +159,12 @@ local function render()
     c.last = #lines
   end
   vim.api.nvim_buf_set_lines(panel.buf, 0, -1, false, lines)
-  if panel_open() then
-    vim.api.nvim_win_set_config(panel.win, panel_config())
+  for _, w in pairs(panel.wins) do
+    if vim.api.nvim_win_is_valid(w) then update_panel(w) end
+  end
+  if win then
     if keep and vim.tbl_contains(chats, keep) then row = keep.first + offset elseif keep then row = keep.first end
-    vim.api.nvim_win_set_cursor(panel.win, { math.max(1, math.min(row, #lines)), 0 })
+    vim.api.nvim_win_set_cursor(win, { math.max(1, math.min(row, #lines)), 0 })
   end
   refresh()
 end
@@ -155,7 +175,8 @@ local function delete(chat)
   end
   if chat.forget then chat.forget() end
   render()
-  if #chats == 0 and panel_open() then vim.api.nvim_win_close(panel.win, true) end
+  local win = panel_win()
+  if #chats == 0 and win and is_float(win) then vim.api.nvim_win_close(win, true) end
 end
 
 local function panel_buf()
@@ -165,8 +186,10 @@ local function panel_buf()
   local function map(lhs, rhs) vim.keymap.set("n", lhs, rhs, { buffer = panel.buf, nowait = true }) end
   map("<Esc>", "<cmd>close<cr>")
   map("m", function()
+    local win = panel_win()
+    if not win or not is_float(win) then return end
     panel.big = not panel.big
-    vim.api.nvim_win_set_config(panel.win, panel_config())
+    update_panel(win)
   end)
   map("q", function()
     local chat = chat_in_panel(vim.fn.line("."))
@@ -192,13 +215,24 @@ local function panel_buf()
 end
 
 local function show_panel(focus)
-  if not panel_open() then
-    panel.win = vim.api.nvim_open_win(panel_buf(), focus, vim.tbl_extend("force", panel_config(), { border = "rounded" }))
-    vim.wo[panel.win][0].wrap = true
-    vim.wo[panel.win][0].linebreak = true
-  elseif focus then
-    vim.api.nvim_set_current_win(panel.win)
+  local win = panel_win()
+  if win then
+    if focus then vim.api.nvim_set_current_win(win) end
+    return
   end
+  local config = vim.t.ask_dock and { split = "right", win = -1, width = math.floor(vim.o.columns * 0.4) }
+    or vim.tbl_extend("force", panel_config(), { border = "rounded" })
+  win = vim.api.nvim_open_win(panel_buf(), focus, config)
+  panel.wins[vim.api.nvim_get_current_tabpage()] = win
+  vim.wo[win][0].wrap = true
+  vim.wo[win][0].linebreak = true
+  update_panel(win)
+end
+
+-- Docks the panel as a split in the current tab instead of a float.
+function M.dock()
+  vim.t.ask_dock = true
+  show_panel(false)
 end
 
 local function send(chat, mode, question)
@@ -221,7 +255,7 @@ local function send(chat, mode, question)
     reply.text = answer and vim.trim(answer) or ("**Error:** " .. vim.trim(err or "unknown"))
     if mode == "edit" and vim.api.nvim_buf_is_valid(chat.buf) then vim.cmd("checktime " .. chat.buf) end
     render()
-    if vim.tbl_contains(chats, chat) and vim.api.nvim_get_current_win() ~= panel.win then reveal(reply.row) end
+    if vim.tbl_contains(chats, chat) and vim.api.nvim_get_current_win() ~= panel_win() then reveal(reply.row) end
   end)
 end
 
