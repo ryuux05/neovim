@@ -415,6 +415,9 @@ class Store:
                                 chat['id'], chat['started'] = session, True
                                 revision = self._save(chat, revision)
                                 emit({'type': 'session', 'id': session, 'started': True, 'revision': revision})
+                            progress = agent_progress(chat['agent'], event)
+                            if progress:
+                                emit(progress)
                             if event.get('type') in ('error', 'turn.failed'):
                                 detail = event.get('error') or {}
                                 error = event.get('message') or (detail.get('message') if isinstance(detail, dict) else str(detail))
@@ -462,11 +465,61 @@ def agent_command(chat, mode, output):
                     'sandbox_mode="' + sandbox + '"', '-o', str(output), chat['id'], '-']
         return ['codex', 'exec', '--sandbox', sandbox, '--skip-git-repo-check', '--json', '-o', str(output), '-']
     tools = '' if chat.get('review') else 'Read,Grep,Glob,Edit,Write' if edit else 'Read,Grep,Glob'
-    command = ['claude', '-p', '--tools', tools, '--output-format', 'stream-json', '--verbose',
+    command = ['claude', '-p', '--tools', tools, '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
                '--resume' if chat.get('started') else '--session-id', chat['id']]
     if edit:
         command += ['--permission-mode', 'acceptEdits']
     return command
+
+
+def agent_progress(agent, event):
+    """Translate public CLI activity and answer events into panel updates."""
+    progress = {'type': 'progress'}
+    if agent == 'codex':
+        kind = event.get('type', '')
+        item = event.get('item') or {}
+        if kind == 'turn.started':
+            progress['activity'] = 'Thinking…'
+        elif kind.startswith('item.') and isinstance(item, dict):
+            item_type = item.get('type')
+            if item_type == 'agent_message' and isinstance(item.get('text'), str):
+                progress.update(text=item['text'], activity='Writing response…')
+            elif item_type == 'command_execution':
+                prefix = 'Finished: ' if kind == 'item.completed' else 'Running: '
+                progress['activity'] = prefix + str(item.get('command', 'command'))
+            elif item_type == 'file_change':
+                paths = [change['path'] for change in item.get('changes', [])
+                         if isinstance(change, dict) and isinstance(change.get('path'), str)]
+                progress['activity'] = 'Updating files: ' + ', '.join(paths)
+            elif item_type == 'mcp_tool_call':
+                progress['activity'] = 'Using tool: ' + str(item.get('tool', 'MCP'))
+            elif item_type == 'web_search':
+                progress['activity'] = 'Searching: ' + str(item.get('query', 'web'))
+            elif item_type in ('reasoning', 'todo_list'):
+                progress['activity'] = 'Planning…'
+    elif not event.get('parent_tool_use_id'):
+        kind = event.get('type')
+        if kind == 'stream_event':
+            streamed = event.get('event') or {}
+            block = streamed.get('content_block') or {}
+            delta = streamed.get('delta') or {}
+            if streamed.get('type') == 'content_block_start' and block.get('type') == 'tool_use':
+                progress['activity'] = 'Using tool: ' + str(block.get('name', 'tool'))
+            elif delta.get('type') == 'text_delta' and isinstance(delta.get('text'), str):
+                progress.update(delta=delta['text'], activity='Writing response…')
+        elif kind == 'assistant':
+            blocks = (event.get('message') or {}).get('content', [])
+            texts = [block['text'] for block in blocks if block.get('type') == 'text' and isinstance(block.get('text'), str)]
+            if texts:
+                progress.update(text='\n'.join(texts), activity='Writing response…')
+            tools = [block.get('name', 'tool') for block in blocks if block.get('type') == 'tool_use']
+            if tools:
+                progress['activity'] = 'Using tool: ' + str(tools[-1])
+        elif kind == 'system' and event.get('subtype') == 'api_retry':
+            progress['activity'] = 'Retrying request (attempt ' + str(event.get('attempt', '?')) + ')…'
+    if 'activity' in progress:
+        progress['activity'] = ' '.join(progress['activity'].split())[:160]
+    return progress if len(progress) > 1 else None
 
 
 def main():

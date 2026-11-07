@@ -103,7 +103,7 @@ end
 function M.search(query) return call({ op = "search", query = query }) end
 function M.rebuild() return call({ op = "rebuild" }) end
 
-function M.run(chat, mode, prompt, callback)
+function M.run(chat, mode, prompt, callback, progress)
   local pending, completion = "", nil
   local function event(line)
     if line == "" then return end
@@ -112,6 +112,13 @@ function M.run(chat, mode, prompt, callback)
     if value.id then chat.id = value.id end
     if value.started ~= nil then chat.started = value.started end
     if value.revision then chat.revision = value.revision end
+    if progress then
+      if value.type == "progress" then
+        progress(value)
+      elseif value.type == "accepted" then
+        progress({ activity = "Starting " .. chat.agent .. "…" })
+      end
+    end
     if value.type == "complete" then
       completion = value
       warn(value.warning)

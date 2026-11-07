@@ -7,6 +7,14 @@ local base = {}
 local changed = {}
 local own = {}
 local pending = {}
+local seen = {}
+local reloading = {}
+
+local function stamp(buf)
+  local stat = vim.uv.fs_stat(vim.api.nvim_buf_get_name(buf))
+  if not stat or stat.type ~= "file" then return end
+  return table.concat({ stat.ino, stat.size, stat.mtime.sec, stat.mtime.nsec }, ":")
+end
 
 local function set_hl()
   vim.api.nvim_set_hl(0, "AgentChange", { bg = "#1e3a5f" })
@@ -20,7 +28,38 @@ end
 
 local function snapshot(buf)
   base[buf] = content(buf)
+  seen[buf] = stamp(buf)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+end
+
+local function reload(buf)
+  if reloading[buf] or not vim.api.nvim_buf_is_loaded(buf) or vim.bo[buf].buftype ~= "" then return end
+  local autoread = vim.bo[buf].autoread
+  if autoread == nil then autoread = vim.go.autoread end
+  if vim.bo[buf].modified or not autoread then return end
+  if vim.fn.mode():match("^[cr]") or vim.fn.getcmdwintype() ~= "" then return end
+  local current = stamp(buf)
+  if not current or current == seen[buf] then return end
+  local views = {}
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    views[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+  end
+  reloading[buf] = true
+  local ok, err = pcall(vim.api.nvim_buf_call, buf, function()
+    -- checktime can defer checks and asks to load newly created files even
+    -- with autoread. Only clean buffers reach this immediate native reload.
+    vim.cmd("silent keepalt keepjumps edit!")
+  end)
+  reloading[buf] = nil
+  if not ok then return vim.notify(tostring(err), vim.log.levels.ERROR) end
+  seen[buf] = stamp(buf)
+  for win, view in pairs(views) do
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_call(win, function() vim.fn.winrestview(view) end)
+    end
+  end
+  vim.api.nvim_exec_autocmds("FileChangedShellPost", { buffer = buf })
+  vim.cmd.redraw()
 end
 
 local function clear(buf)
@@ -101,6 +140,8 @@ vim.uv.new_fs_event():start(root, { recursive = true }, vim.schedule_wrap(functi
   end
   local stat = vim.uv.fs_stat(path)
   if not stat or stat.type ~= "file" or pending[path] then return end
+  local buf = vim.fn.bufnr(path)
+  if buf ~= -1 then reload(buf) end
   pending[path] = true
   classify(path, function(agent)
     pending[path] = nil
@@ -108,24 +149,28 @@ vim.uv.new_fs_event():start(root, { recursive = true }, vim.schedule_wrap(functi
   end)
 end))
 
-vim.uv.new_timer():start(1000, 1000, vim.schedule_wrap(function()
-  if vim.fn.mode() == "c" or vim.fn.getcmdwintype() ~= "" then return end
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "" then
-      vim.cmd("silent! checktime " .. buf)
+vim.uv.new_timer():start(250, 250, vim.schedule_wrap(function()
+  local checked = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(win) then
+      local buf = vim.api.nvim_win_get_buf(win)
+      if not checked[buf] then reload(buf); checked[buf] = true end
     end
   end
 end))
 
 local group = vim.api.nvim_create_augroup("AgentChanges", { clear = true })
 vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = set_hl })
-vim.api.nvim_create_autocmd("BufReadPost", { group = group, callback = function(a)
+vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, { group = group, callback = function(a)
   if not base[a.buf] then snapshot(a.buf) end
+  seen[a.buf] = stamp(a.buf)
 end })
+vim.api.nvim_create_autocmd({ "BufEnter", "FocusGained" }, { group = group, callback = function(a) reload(a.buf) end })
 vim.api.nvim_create_autocmd("FileChangedShellPost", { group = group, callback = function(a)
   classify(vim.api.nvim_buf_get_name(a.buf), function(agent)
     if not vim.api.nvim_buf_is_valid(a.buf) then return end
     if agent then mark(a.buf) else snapshot(a.buf) end
+    vim.cmd.redraw()
   end)
 end })
 vim.api.nvim_create_autocmd("BufWritePre", { group = group, callback = function(a)
@@ -136,7 +181,9 @@ vim.api.nvim_create_autocmd("BufWritePost", { group = group, callback = function
   clear(a.buf)
   vim.defer_fn(function() own[name] = nil end, 1000)
 end })
-vim.api.nvim_create_autocmd("BufWipeout", { group = group, callback = function(a) base[a.buf] = nil end })
+vim.api.nvim_create_autocmd("BufWipeout", { group = group, callback = function(a)
+  base[a.buf], seen[a.buf], reloading[a.buf] = nil, nil, nil
+end })
 
 vim.api.nvim_create_user_command("AgentClear", function() clear(vim.api.nvim_get_current_buf()) end, {})
 vim.keymap.set("n", "<leader>cc", "<cmd>AgentClear<cr>", { desc = "Clear agent highlights" })

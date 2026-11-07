@@ -13,6 +13,15 @@ Completed conversations and their session IDs are saved automatically.
 After restarting Neovim in the same working directory, use :AgentPanel to
 restore them. Existing conversations keep their original agent.
 
+While a request runs, the panel displays tool activity and incoming answer
+text. Updates repaint automatically while the terminal is idle. Codex emits
+message/item updates; Claude's partial-message stream supplies text deltas.
+The final response replaces the draft and is saved to the journal.
+
+Agent edits reload into clean file buffers automatically, including files
+created after opening a new buffer. Unsaved local edits and an explicit local
+noautoread setting are preserved. No keypress or focus change is required.
+
 SEARCH SAVED CONVERSATIONS                                *:AgentSearch*
 
     :AgentSearch parser regression
@@ -100,9 +109,12 @@ TESTS                                                    *agent-panel-tests*
 From the Neovim configuration directory, run:
     python3 tests/ask_sessions.py
     python3 tests/test_ask_store.py
+    python3 tests/agent_live_updates.py
 
 The checks use temporary state and fake Codex and Claude executables. They
 cover process termination, early session IDs, torn records, concurrent writes,
 migration, tombstones, index rebuilding, search and same-session continuation.
+The live-update checks attach a terminal and wait for visible progress, drafts,
+completed replies and file reloads without sending user input.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

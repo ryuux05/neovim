@@ -148,6 +148,9 @@ local function render()
       m.row = #lines + 1
       vim.list_extend(lines, { "## " .. m.role, "" })
       vim.list_extend(lines, vim.split(m.text or "_working…_", "\n"))
+      if m == c.messages[#c.messages] and c.busy and c.activity then
+        vim.list_extend(lines, { "", "↳ " .. c.activity })
+      end
       table.insert(lines, "")
     end
     c.last = #lines
@@ -254,14 +257,31 @@ local function send(chat, mode, question)
   local request = mode == "edit"
       and ("Make this change by editing the files directly, keeping it minimal: " .. question .. "\nThen briefly summarize what you changed.")
     or ("Question: " .. question)
+  local pending_render = false
+  local function progress(event)
+    if not chat.busy then return end
+    if event.activity then chat.activity = event.activity end
+    if event.text ~= nil then reply.text = event.text end
+    if event.delta then reply.text = (reply.text or "") .. event.delta end
+    if pending_render then return end
+    pending_render = true
+    vim.defer_fn(function()
+      pending_render = false
+      if not chat.busy then return end
+      render()
+      vim.cmd.redraw()
+    end, 50)
+  end
   state.run(chat, mode, (chat.context and chat.context .. "\n\n" or "") .. request, function(answer, err)
     chat.busy, chat.failed = false, not answer
+    chat.activity = nil
     if answer then chat.started, chat.context = true, nil end
     reply.text = answer and vim.trim(answer) or ("**Error:** " .. vim.trim(err or "unknown"))
     if mode == "edit" and vim.api.nvim_buf_is_valid(chat.buf) then vim.cmd("checktime " .. chat.buf) end
     render()
     if vim.tbl_contains(chats, chat) and vim.api.nvim_get_current_win() ~= panel_win() then reveal(reply.row) end
-  end)
+    vim.cmd.redraw()
+  end, progress)
 end
 
 prompt_window = function(chat)
