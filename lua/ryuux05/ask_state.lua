@@ -1,121 +1,161 @@
 local M = {}
 local root = vim.fn.stdpath("state") .. "/ask"
-local agents = { codex = true, claude = true }
+local source = debug.getinfo(1, "S").source:sub(2)
+local helper = vim.fn.fnamemodify(source, ":h:h:h") .. "/scripts/ask_store.py"
+local fields = {
+  "key",
+  "created",
+  "cwd",
+  "agent",
+  "id",
+  "started",
+  "context",
+  "label",
+  "review",
+  "mode",
+  "source",
+  "failed",
+}
 
-local function read(path)
-  if vim.fn.filereadable(path) == 0 then return end
-  local ok, value = pcall(function() return vim.json.decode(table.concat(vim.fn.readfile(path), "\n")) end)
-  if ok and type(value) == "table" then return value end
-  vim.notify("Could not read AI state: " .. path, vim.log.levels.WARN)
+local function command() return { vim.g.ask_python or "python3", helper, "--root", root } end
+local function decode(text) return vim.json.decode(text, { luanil = { object = true, array = true } }) end
+local function warn(message)
+  if message then vim.notify(message, vim.log.levels.WARN) end
 end
 
-local function write(path, value)
-  local temp = path .. "." .. vim.fn.getpid() .. ".tmp"
-  local ok, err = pcall(function()
-    vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p", 448)
-    assert(vim.fn.writefile({ vim.json.encode(value) }, temp) == 0)
-    assert(vim.uv.fs_rename(temp, path))
+local function call(request)
+  local ok, result = pcall(function()
+    local process = vim.system(command(), { stdin = vim.json.encode(request), text = true }):wait(10000)
+    local response = decode(process.stdout or "")
+    if not response.ok then error(response.error or process.stderr) end
+    return response.result
   end)
-  if not ok then
-    vim.fn.delete(temp)
-    vim.notify("Could not save AI state: " .. tostring(err), vim.log.levels.ERROR)
-  end
-  return ok
+  if ok then return result end
+  local message = "AI storage: " .. tostring(result)
+  vim.notify(message, vim.log.levels.ERROR)
+  return nil, message
 end
 
-local function directory(cwd) return root .. "/sessions/" .. vim.fn.sha256(cwd) end
-
-function M.default()
-  local settings = read(root .. "/settings.json")
-  return settings and agents[settings.default_agent] and settings.default_agent or "codex"
-end
-
-function M.set_default(agent) return write(root .. "/settings.json", { default_agent = agent }) end
-
-function M.save(chat)
+local function snapshot(chat)
   if not chat.key then
     chat.key = vim.fn.sha256(vim.fn.tempname())
     local seconds, microseconds = vim.uv.gettimeofday()
     chat.created = seconds + microseconds / 1000000
   end
   local saved = {}
-  for _, field in ipairs({
-    "key",
-    "created",
-    "cwd",
-    "agent",
-    "id",
-    "started",
-    "messages",
-    "context",
-    "label",
-    "review",
-    "mode",
-    "source",
-    "failed",
-  }) do
+  for _, field in ipairs(fields) do
     saved[field] = chat[field]
   end
+  saved.messages = {}
+  for _, message in ipairs(chat.messages) do
+    table.insert(saved.messages, { role = message.role, text = message.text })
+  end
   saved.interrupted = not not chat.busy
-  return write(directory(chat.cwd) .. "/" .. chat.key .. ".json", saved)
+  return saved
+end
+
+local function hydrate(chat)
+  if not chat then return end
+  if chat.active then
+    chat.busy = "external"
+  elseif chat.interrupted then
+    chat.failed = true
+    local reply = chat.messages[#chat.messages]
+    if reply and not reply.text then reply.text = "_Interrupted. Send a follow-up to continue._" end
+  end
+  chat.active, chat.interrupted = nil, nil
+  return chat
+end
+
+function M.default() return call({ op = "default" }) or "codex" end
+function M.set_default(agent) return call({ op = "default", agent = agent }) ~= nil end
+
+function M.save(chat)
+  -- The request worker owns durable updates while a turn is running.
+  if chat.busy then return true end
+  local result = call({ op = "save", chat = snapshot(chat), revision = chat.revision or 0 })
+  if not result then return false end
+  chat.revision = result.revision
+  warn(result.warning)
+  return true
 end
 
 function M.delete(chat)
-  if chat.key then vim.fn.delete(directory(chat.cwd) .. "/" .. chat.key .. ".json") end
+  local result = call({ op = "delete", cwd = chat.cwd, key = chat.key, revision = chat.revision })
+  if not result then return false end
+  warn(result.warning)
+  return true
 end
 
 function M.load(cwd)
-  local chats = {}
-  for _, path in ipairs(vim.fn.globpath(directory(cwd), "*.json", false, true)) do
-    local chat = read(path)
-    local valid = chat
-      and agents[chat.agent]
-      and chat.cwd == cwd
-      and type(chat.label) == "string"
-      and type(chat.created) == "number"
-      and type(chat.key) == "string"
-      and chat.key:match("^%x+$")
-      and vim.fn.fnamemodify(path, ":t:r") == chat.key
-      and type(chat.messages) == "table"
-      and vim.islist(chat.messages)
-      and (not chat.started or type(chat.id) == "string")
-    if valid and chat.source ~= nil then
-      local source = chat.source
-      valid = type(source) == "table"
-        and type(source.path) == "string"
-        and type(source.l1) == "number"
-        and source.l1 >= 1
-        and source.l1 % 1 == 0
-        and type(source.l2) == "number"
-        and source.l2 >= source.l1
-        and source.l2 % 1 == 0
-    end
-    if valid then
-      for _, message in ipairs(chat.messages) do
-        if
-          type(message) ~= "table"
-          or type(message.role) ~= "string"
-          or (message.text ~= nil and type(message.text) ~= "string")
-        then
-          valid = false
-          break
-        end
-      end
-    end
-    if valid then
-      if chat.interrupted then
-        chat.failed = true
-        local reply = chat.messages[#chat.messages]
-        if reply and not reply.text then reply.text = "_Interrupted. Send a follow-up to continue._" end
-      end
-      chat.interrupted = nil
-      table.insert(chats, chat)
-    elseif chat then
-      vim.notify("Skipping invalid AI session: " .. path, vim.log.levels.WARN)
+  local chats = call({ op = "load", cwd = cwd })
+  if not chats then return end
+  for _, chat in ipairs(chats) do
+    hydrate(chat)
+  end
+  return chats
+end
+
+function M.get(cwd, key)
+  local chat, err = call({ op = "get", cwd = cwd, key = key })
+  return hydrate(chat), err
+end
+function M.search(query) return call({ op = "search", query = query }) end
+function M.rebuild() return call({ op = "rebuild" }) end
+
+function M.run(chat, mode, prompt, callback)
+  local pending, completion = "", nil
+  local function event(line)
+    if line == "" then return end
+    local ok, value = pcall(decode, line)
+    if not ok or type(value) ~= "table" then return end
+    if value.id then chat.id = value.id end
+    if value.started ~= nil then chat.started = value.started end
+    if value.revision then chat.revision = value.revision end
+    if value.type == "complete" then
+      completion = value
+      warn(value.warning)
+    elseif value.ok == false then
+      completion = value
     end
   end
-  table.sort(chats, function(a, b) return a.created < b.created end)
-  return chats
+  local ok, err = pcall(
+    vim.system,
+    command(),
+    {
+      stdin = vim.json.encode({
+        op = "run",
+        chat = snapshot(chat),
+        revision = chat.revision or 0,
+        mode = mode,
+        prompt = prompt,
+      }),
+      text = true,
+      detach = true,
+      stdout = vim.schedule_wrap(function(error, chunk)
+        if error then return end
+        pending = pending .. (chunk or "")
+        while true do
+          local finish = pending:find("\n", 1, true)
+          if not finish then break end
+          event(pending:sub(1, finish - 1))
+          pending = pending:sub(finish + 1)
+        end
+      end),
+    },
+    vim.schedule_wrap(function(result)
+      event(pending)
+      if completion then
+        callback(completion.answer, completion.error)
+      else
+        callback(
+          nil,
+          vim.trim(result.stderr or "") ~= "" and result.stderr or "Agent worker stopped; reopen the saved conversation"
+        )
+      end
+    end)
+  )
+  if not ok then callback(nil, tostring(err)) end
 end
 
 return M

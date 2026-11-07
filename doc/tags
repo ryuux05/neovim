@@ -1,6 +1,9 @@
 :AgentDefault	agent-panel.txt	/*:AgentDefault*
+:AgentIndexRebuild	agent-panel.txt	/*:AgentIndexRebuild*
 :AgentPanel	agent-panel.txt	/*:AgentPanel*
+:AgentSearch	agent-panel.txt	/*:AgentSearch*
 agent-panel	agent-panel.txt	/*agent-panel*
 agent-panel-state	agent-panel.txt	/*agent-panel-state*
 agent-panel-tests	agent-panel.txt	/*agent-panel-tests*
 agent-panel.txt	agent-panel.txt	/*agent-panel.txt*
+agent-storage.txt	agent-storage.txt	/*agent-storage.txt*

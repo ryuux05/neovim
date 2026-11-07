@@ -69,18 +69,9 @@ end
 local function next_change()
   local cur = vim.api.nvim_get_current_buf()
   local rows = starts(cur, vim.api.nvim_win_get_cursor(0)[1])
+  if not rows[1] then rows = starts(cur, 0) end
   if rows[1] then return vim.api.nvim_win_set_cursor(0, { rows[1] + 1, 0 }) end
-  local bufs = vim.api.nvim_list_bufs()
-  local i = vim.fn.index(bufs, cur)
-  for k = 1, #bufs do
-    local buf = bufs[(i + k) % #bufs + 1]
-    rows = starts(buf, 0)
-    if rows[1] then
-      vim.api.nvim_set_current_buf(buf)
-      return vim.api.nvim_win_set_cursor(0, { rows[1] + 1, 0 })
-    end
-  end
-  vim.notify("No agent changes")
+  vim.notify("No agent changes in this buffer")
 end
 
 local function pick()

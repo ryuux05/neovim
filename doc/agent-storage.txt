@@ -1,0 +1,51 @@
+*agent-storage.txt*  Storage design and recovery contract
+
+The panel owns UI and file anchors in ask.lua. ask_state.lua is its storage
+adapter. scripts/ask_store.py owns durable state, indexing and the per-request
+agent worker. Callers do not append journal records or write SQL themselves.
+
+The source of truth is one JSONL journal per conversation. A record has a
+version, consecutive revision, operation and timestamp. Patches contain changed
+metadata, removed metadata keys, and the message suffix starting at the first
+changed message. Saving a new session ID does not duplicate the transcript.
+
+An acknowledged append has passed file and directory fsync. An incomplete
+final record can be repaired, but valid earlier records are never rewritten.
+Complete corrupt records stop recovery visibly. Logical deletion appends a
+terminal tombstone so a stale editor or legacy import cannot resurrect a chat.
+
+SQLite stores the latest projection and an FTS5 index. It tracks file size and
+mtime to avoid replaying unchanged journals during discovery. Conversation and
+FTS rows update in one transaction. A failed index update is a warning after a
+successful journal commit; search catches up later. Index rebuilding is local,
+idempotent, and independent of the agent services.
+
+DESIGN COMPARISON
+
+Two candidates independently chose per-conversation delta journals, revision
+checks, fsync, tombstones and a Python standard-library storage boundary. Both
+scored 11/12 against durability, replay, concurrency, caller simplicity,
+discovery and implementation size in an independent review.
+
+The selected candidate uses a request worker holding a turn-duration flock.
+The alternative kept CLI execution in Lua and tracked Neovim PID liveness.
+It was smaller, but Neovim death does not establish that its CLI has stopped.
+The worker also holds ownership while saving a result after the UI disappears.
+Its lock descriptor is inherited by the agent child to retain ownership if
+the worker is killed unexpectedly. The process-termination tests verify that
+launch topology with the fake CLIs. An arbitrary third-party CLI that closes
+inherited descriptors can weaken the worker-death guarantee.
+
+The selected design includes the other candidate's narrow commit semantics:
+index failure does not invalidate a durable save, identical retries are no-ops,
+and opening a search result always rereads the canonical journal.
+
+LIMITS
+
+Journaling supports recovery; it cannot prevent crashes or hardware failure.
+Journals currently retain all events, including logically deleted text. Future
+retention or compaction must preserve tombstones and rebuild semantics. Python
+is started per storage operation; a persistent service is unnecessary at the
+current panel scale and can be considered if measured latency warrants it.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

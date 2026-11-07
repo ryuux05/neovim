@@ -13,6 +13,27 @@ Completed conversations and their session IDs are saved automatically.
 After restarting Neovim in the same working directory, use :AgentPanel to
 restore them. Existing conversations keep their original agent.
 
+SEARCH SAVED CONVERSATIONS                                *:AgentSearch*
+
+    :AgentSearch parser regression
+    :AgentSearch
+
+In the panel, press / to enter search keywords, or r to list recent
+conversations. Cancel the search prompt to return to the current conversation.
+
+Search labels and conversation messages across working directories. Multiple
+keywords must all match; an empty query lists recent conversations. Select a
+result to reopen it, then press <Enter> or i to continue its original session.
+
+Search uses a local SQLite full-text index. The journal remains authoritative:
+opening a result reloads the current conversation and checks whether it was
+deleted or is still running elsewhere.
+
+    :AgentIndexRebuild                                    *:AgentIndexRebuild*
+
+Rebuild the search index from the journals. A missing index is rebuilt when
+search runs. Rebuilding never contacts an agent service.
+
 DEFAULT AGENT                                            *:AgentDefault*
 
     :AgentDefault             Show the current default.
@@ -25,25 +46,50 @@ switches between Codex and Claude for that conversation only.
 PANEL KEYS                                               *:AgentPanel*
 
     <Enter>, i    Continue the conversation under the cursor.
+    /             Search saved conversation history by keyword.
+    r             List recent saved conversations.
     ]], [[        Jump to the next or previous conversation.
     m             Expand or shrink the panel.
     q             Delete the conversation from the panel and saved panel history.
     <Esc>         Hide the panel.
 
-Deleting a panel conversation leaves the agent CLI's own history intact.
+Deleting a panel conversation appends a tombstone and removes it from search.
+Its previous text remains in the journal and in the agent CLI's own history.
 An active request must finish before its conversation can be deleted.
 
 Ask mode reads code. For a conversation attached to an open file, <C-e>
 selects edit mode and <C-a> returns to ask mode in the prompt.
 
+Space n moves to the next agent change in the current file and wraps to the
+first change at the top. It never switches files. Space p a opens the separate
+changed-files picker; ga opens the conversation panel.
+
 REQUIREMENTS AND STORAGE                                  *agent-panel-state*
 
-The selected agent CLI must be installed, on PATH, and authenticated.
+The selected agent CLI must be installed, on PATH, and authenticated. Storage
+also requires Python 3 with sqlite3 and FTS5. Set g:ask_python to an interpreter
+path if python3 on PATH does not include those modules.
 
-Panel history is stored per working directory under:
-    stdpath('state')/ask/sessions/
-The default preference is stored in:
-    stdpath('state')/ask/settings.json
+State lives under stdpath('state')/ask/:
+
+    journal/<cwd hash>/<key>.jsonl   Append-only conversation changes.
+    journal/<cwd hash>/<key>.lock    OS lock for an active conversation turn.
+    settings.jsonl                  Default-agent preference journal.
+    index.sqlite3                   Rebuildable discovery index.
+
+Journal changes are flushed with fsync before they are acknowledged. Session
+IDs are saved as soon as the CLI emits them. An unfinished final journal line
+is ignored on recovery and repaired before the next append; a corrupt complete
+record is reported rather than silently skipped.
+
+A request worker holds the turn lock until the agent finishes. Closing Neovim
+does not cancel it: it finishes saving the response even if the panel is gone.
+Readers can inspect a running conversation, but another turn, metadata write,
+or deletion is rejected while it is active. Stale revisions are also rejected.
+
+Existing settings.json and sessions/**/*.json snapshots are imported once and
+kept unchanged as backups. Existing journals and deletion tombstones take
+precedence over those backups. New writes only use the journals.
 
 Only conversations submitted with this version are saved across restarts.
 Conversations already open in an older Neovim process can still be continued
@@ -53,7 +99,10 @@ TESTS                                                    *agent-panel-tests*
 
 From the Neovim configuration directory, run:
     python3 tests/ask_sessions.py
+    python3 tests/test_ask_store.py
 
-The checks use temporary state and fake Codex and Claude executables.
+The checks use temporary state and fake Codex and Claude executables. They
+cover process termination, early session IDs, torn records, concurrent writes,
+migration, tombstones, index rebuilding, search and same-session continuation.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

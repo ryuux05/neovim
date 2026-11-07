@@ -17,16 +17,20 @@ local function save(chat)
     local l1, l2 = chat.range(chat.buf)
     if l1 then chat.source.l1, chat.source.l2 = l1, l2 end
   end
-  state.save(chat)
+  return state.save(chat)
 end
 
 local function restore(cwd)
   if loaded[cwd] then return end
+  local saved = state.load(cwd)
+  if not saved then return end
   loaded[cwd] = true
-  for _, chat in ipairs(state.load(cwd)) do
-    chat.out = vim.fn.tempname()
-    chat.range = function() end
-    table.insert(chats, chat)
+  for _, chat in ipairs(saved) do
+    local exists = vim.iter(chats):any(function(current) return current.cwd == chat.cwd and current.key == chat.key end)
+    if not exists then
+      chat.range = function() end
+      table.insert(chats, chat)
+    end
   end
 end
 
@@ -51,46 +55,8 @@ function M.label(path, l1, l2)
   return vim.fn.fnamemodify(path, ":t") .. ":" .. (l1 == l2 and l1 or l1 .. "-" .. l2)
 end
 
-local function command(chat, mode)
-  local edit = mode == "edit"
-  local tools = chat.review and "" or edit and "Read,Grep,Glob,Edit,Write" or "Read,Grep,Glob"
-  local sandbox = edit and "workspace-write" or "read-only"
-  if chat.agent == "claude" then
-    chat.id = chat.id or vim.trim(vim.fn.system("uuidgen")):lower()
-    local cmd = { "claude", "-p", "--tools", tools, chat.started and "--resume" or "--session-id", chat.id }
-    if edit then vim.list_extend(cmd, { "--permission-mode", "acceptEdits" }) end
-    return cmd
-  elseif chat.started then
-    return { "codex", "exec", "resume", "--skip-git-repo-check", "--json", "-c", "sandbox_mode=" .. sandbox, "-o", chat.out, chat.id, "-" }
-  end
-  return { "codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check", "--json", "-o", chat.out, "-" }
-end
-
-local function run(chat, mode, prompt, cb)
-  local cmd = command(chat, mode)
-  vim.fn.delete(chat.out)
-  local ok, err = pcall(vim.system, cmd, { stdin = prompt, text = true, cwd = chat.cwd }, vim.schedule_wrap(function(r)
-    if chat.agent == "claude" then
-      if r.code ~= 0 then return cb(nil, r.stderr ~= "" and r.stderr or r.stdout) end
-      return cb(r.stdout)
-    end
-    local err
-    for _, line in ipairs(vim.split(r.stdout, "\n", { trimempty = true })) do
-      local ok, ev = pcall(vim.json.decode, line)
-      ok = ok and type(ev) == "table"
-      if ok and ev.type == "thread.started" then chat.id, chat.started = ev.thread_id, true end
-      if ok and (ev.type == "error" or ev.type == "turn.failed") then err = ev.message or (ev.error and ev.error.message) end
-    end
-    if r.code ~= 0 or err or vim.fn.filereadable(chat.out) == 0 then
-      return cb(nil, err or (r.stderr ~= "" and r.stderr) or 'Codex exited without a response')
-    end
-    if not chat.id then return cb(nil, 'Codex did not return a session ID') end
-    cb(table.concat(vim.fn.readfile(chat.out), "\n"))
-  end))
-  if not ok then cb(nil, tostring(err)) end
-end
-
 local function status(chat)
+  if chat.busy == "external" then return "working elsewhere…" end
   if chat.busy then return chat.busy == "edit" and "editing…" or "thinking…" end
   return chat.failed and "error" or "done"
 end
@@ -137,7 +103,7 @@ local function panel_config()
   local config = {
     relative = "editor", width = math.min(60, vim.o.columns - 4), height = 10, footer_pos = "center",
     title = panel_title(),
-    footer = " Enter/i continue · ]] [[ jump · m " .. (panel.big and "min" or "max") .. " · q delete · Esc hide ",
+    footer = " Enter/i reply · / history · r recent · Esc hide ",
   }
   if panel.big then
     config.width, config.height = math.floor(vim.o.columns * 0.8), math.floor(vim.o.lines * 0.8)
@@ -151,7 +117,7 @@ end
 local function update_panel(win)
   -- Window options follow the buffer, so a float would inherit the docked panel's winbar.
   local float = is_float(win)
-  vim.wo[win][0].winbar = float and "" or panel_title() .. "│ i ask · ]] [[ jump · q delete · Esc hide"
+  vim.wo[win][0].winbar = float and "" or panel_title() .. "│ Enter/i reply · / history · r recent · Esc hide"
   if float then vim.api.nvim_win_set_config(win, panel_config()) end
 end
 
@@ -199,11 +165,11 @@ end
 
 local function delete(chat)
   if chat.busy then return vim.notify(names[chat.agent] .. " is still working") end
+  if not state.delete(chat) then return end
   for i, c in ipairs(chats) do
     if c == chat then table.remove(chats, i) break end
   end
   if chat.forget then chat.forget() end
-  state.delete(chat)
   render()
   local win = panel_win()
   if #chats == 0 and win and is_float(win) then vim.api.nvim_win_close(win, true) end
@@ -215,6 +181,12 @@ local function panel_buf()
   vim.bo[panel.buf].filetype = "markdown"
   local function map(lhs, rhs) vim.keymap.set("n", lhs, rhs, { buffer = panel.buf, nowait = true }) end
   map("<Esc>", "<cmd>close<cr>")
+  map("/", function()
+    vim.ui.input({ prompt = "Search AI history: " }, function(query)
+      if query ~= nil then M.search(query) end
+    end)
+  end)
+  map("r", function() M.search("") end)
   map("m", function()
     local win = panel_win()
     if not win or not is_float(win) then return end
@@ -274,7 +246,6 @@ local function send(chat, mode, question)
   local reply = { role = names[chat.agent] }
   vim.list_extend(chat.messages, { { role = mode == "edit" and "You (edit)" or "You", text = question }, reply })
   chat.busy = mode
-  save(chat)
   if mode == "edit" and vim.bo[chat.buf].modified then
     vim.api.nvim_buf_call(chat.buf, function() vim.cmd("silent write") end)
   end
@@ -283,11 +254,10 @@ local function send(chat, mode, question)
   local request = mode == "edit"
       and ("Make this change by editing the files directly, keeping it minimal: " .. question .. "\nThen briefly summarize what you changed.")
     or ("Question: " .. question)
-  run(chat, mode, (chat.context and chat.context .. "\n\n" or "") .. request, function(answer, err)
+  state.run(chat, mode, (chat.context and chat.context .. "\n\n" or "") .. request, function(answer, err)
     chat.busy, chat.failed = false, not answer
     if answer then chat.started, chat.context = true, nil end
     reply.text = answer and vim.trim(answer) or ("**Error:** " .. vim.trim(err or "unknown"))
-    save(chat)
     if mode == "edit" and vim.api.nvim_buf_is_valid(chat.buf) then vim.cmd("checktime " .. chat.buf) end
     render()
     if vim.tbl_contains(chats, chat) and vim.api.nvim_get_current_win() ~= panel_win() then reveal(reply.row) end
@@ -415,7 +385,7 @@ function M.attach(buf, make_chat)
   vim.b[buf].ask_attached = true
   local function ask(l1, l2)
     local chat = make_chat(buf, l1, l2)
-    chat.agent, chat.messages, chat.out, chat.cwd = default_agent, {}, vim.fn.tempname(), vim.fn.getcwd()
+    chat.agent, chat.messages, chat.cwd = default_agent, {}, vim.fn.getcwd()
     prompt_window(chat)
   end
   local function ask_line() ask(vim.fn.line("."), vim.fn.line(".")) end
@@ -450,12 +420,67 @@ end
 
 function M.open()
   restore(vim.fn.getcwd())
-  if #chats == 0 then return vim.notify('No AI sessions yet. Press Enter on a file line to start one.') end
+  for index = #chats, 1, -1 do
+    local current = chats[index]
+    if current.busy == "external" then
+      local saved, err = state.get(current.cwd, current.key)
+      if saved then
+        saved.range, saved.buf, saved.remap, saved.forget = current.range, current.buf, current.remap, current.forget
+        chats[index] = saved
+      elseif not err then
+        table.remove(chats, index)
+      end
+    end
+  end
+  if #chats == 0 then
+    local win = panel_win()
+    if win and is_float(win) then vim.api.nvim_win_close(win, true) end
+    refresh()
+    return vim.notify('No AI sessions yet. Press Enter on a file line to start one.')
+  end
   show_panel(true)
+end
+
+function M.search(query)
+  local matches = state.search(query)
+  if not matches then return end
+  if #matches == 0 then return vim.notify('No matching AI conversations') end
+  vim.ui.select(matches, {
+    prompt = 'AI conversations',
+    format_item = function(hit)
+      return names[hit.agent] .. ' · ' .. hit.label .. ' · ' .. hit.cwd .. ' · ' .. hit.snippet
+    end,
+  }, function(hit)
+    if not hit then return end
+    local saved = state.get(hit.cwd, hit.key)
+    if not saved then return vim.notify('Conversation is no longer available') end
+    for index, current in ipairs(chats) do
+      if current.key == saved.key and current.cwd == saved.cwd then
+        if current.busy and current.busy ~= 'external' then return vim.notify('This conversation is still working') end
+        saved.range, saved.buf, saved.remap, saved.forget = current.range, current.buf, current.remap, current.forget
+        chats[index] = saved
+        show_panel(true)
+        return reveal(saved.first)
+      end
+    end
+    saved.range = function() end
+    table.insert(chats, saved)
+    if saved.source and not saved.review then
+      local buf = vim.fn.bufnr(saved.source.path)
+      if buf ~= -1 and vim.api.nvim_buf_is_loaded(buf) then M.attach(buf, file_chat) end
+    end
+    show_panel(true)
+    reveal(saved.first)
+  end)
 end
 
 vim.api.nvim_create_user_command('AgentPanel', M.open, { desc = 'Reopen AI conversations' })
 vim.keymap.set('n', 'ga', M.open, { desc = 'Go to AI sessions' })
+vim.api.nvim_create_user_command('AgentSearch', function(opts) M.search(opts.args) end, { nargs = '*', desc = 'Search saved AI conversations' })
+vim.api.nvim_create_user_command('AgentIndexRebuild', function()
+  local count = state.rebuild()
+  if count then vim.notify('Indexed ' .. count .. ' AI conversations') end
+end, { desc = 'Rebuild AI conversation search from journals' })
 vim.api.nvim_create_user_command('AgentDefault', function(opts)
   if opts.args == '' then return vim.notify('Default agent: ' .. names[default_agent]) end
   if not names[opts.args] then return vim.notify('Choose codex or claude', vim.log.levels.ERROR) end

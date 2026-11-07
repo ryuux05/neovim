@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 REPO = Path(__file__).resolve().parents[1]
 FAKE = r'''#!/usr/bin/env python3
-import json, os, pathlib, sys, uuid
+import json, os, pathlib, sys, uuid, time
 agent = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 prompt = sys.stdin.read()
@@ -20,6 +21,14 @@ else:
     session = args[args.index(flag) + 1]
 with (root / 'requests.jsonl').open('a') as f:
     f.write(json.dumps(dict(agent=agent, session=session, resume=resume, args=args, prompt=prompt)) + '\n')
+if 'HOLD_THIS_TURN' in prompt:
+    if agent == 'codex':
+        print(json.dumps(dict(type='thread.started', thread_id=session)), flush=True)
+    else:
+        print(json.dumps(dict(type='system', subtype='init', session_id=session)), flush=True)
+    (root / 'agent-started').write_text(session)
+    while not (root / 'release-agent').exists():
+        time.sleep(0.02)
 if 'FAIL_THIS_TURN' in prompt:
     print('Simulated request failure', file=sys.stderr)
     sys.exit(1)
@@ -35,7 +44,8 @@ if agent == 'codex':
     pathlib.Path(args[args.index('-o') + 1]).write_text(answer)
     print(json.dumps(dict(type='turn.completed')))
 else:
-    print(answer)
+    print(json.dumps(dict(type='system', subtype='init', session_id=session)), flush=True)
+    print(json.dumps(dict(type='result', result=answer, is_error=False)))
 '''
 COMMON = r'''
 vim.opt.runtimepath:prepend(vim.env.ASK_TEST_REPO)
@@ -61,7 +71,21 @@ local function submit(question, expected)
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { question })
   key('<CR>')
   panel()
-  assert(vim.wait(5000, function() return text():find(expected, 1, true) ~= nil end), text())
+  local function latest_reply()
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local row, first, last = vim.api.nvim_win_get_cursor(0)[1], 1, #lines
+    for index = 1, row do if lines[index]:match('^# ') then first = index end end
+    for index = first + 1, #lines do
+      if lines[index]:match('^# ') then last = index - 1; break end
+    end
+    local message = first
+    for index = first, last do if lines[index]:match('^## ') then message = index end end
+    return table.concat(lines, '\n', message, last)
+  end
+  assert(vim.wait(5000, function()
+    local title = vim.inspect(vim.api.nvim_win_get_config(0).title)
+    return not title:find('working…', 1, true) and latest_reply():find(expected, 1, true) ~= nil
+  end), latest_reply())
 end
 local function prompt_agent(agent)
   local title = vim.inspect(vim.api.nvim_win_get_config(0).title)
@@ -87,7 +111,7 @@ def run(env, script):
 
 
 with tempfile.TemporaryDirectory(prefix='nvim-ask-') as directory:
-    root = Path(directory)
+    root = Path(directory).resolve()
     project = root / 'project'
     project.mkdir()
     (project / 'sample.lua').write_text('local value = 1\nprint(value)\n')
@@ -119,6 +143,11 @@ prompt_agent('Claude')
 submit('A separate Claude conversation.', 'claude turn 1:')
 key('i')
 submit('Continue Claude.', 'claude turn 2:')
+for _, chat in ipairs(require('ryuux05.ask_state').load(vim.fn.getcwd())) do
+  for _, message in ipairs(chat.messages) do
+    assert(message.row == nil, 'Panel display rows must not be persisted as history')
+  end
+end
 ''')
     requests = [json.loads(line) for line in (root / 'requests.jsonl').read_text().splitlines()]
     assert len(requests) == 4
@@ -175,6 +204,28 @@ key('<Esc>')
 panel()
 assert(text():find('codex turn 5:', 1, true))
 assert(text():find('claude turn 3:', 1, true))
+local selections = 0
+vim.ui.select = function() selections = selections + 1 end
+vim.ui.input = function(options, callback)
+  assert(options.prompt:find('history', 1, true))
+  callback(nil)
+end
+key('/')
+assert(selections == 0, 'Canceling search must leave the current conversation alone')
+vim.ui.input = function(options, callback) callback('restarting Neovim') end
+vim.ui.select = function(items, options, callback)
+  assert(#items == 1 and items[1].agent == 'codex', 'Slash must search all saved history')
+  callback(items[1])
+end
+key('/')
+assert(vim.api.nvim_get_current_line():find('Codex', 1, true))
+vim.ui.select = function(items, options, callback)
+  assert(#items == 2, 'Recent history must list both conversations')
+  selections = selections + 1
+  callback(nil)
+end
+key('r')
+assert(selections == 1, 'r must open the recent-history picker')
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
 key('q')
 assert(not text():find('codex turn 5:', 1, true))
@@ -221,4 +272,146 @@ submit('Continue the review.', 'codex turn 2:')
 """)
     requests = [json.loads(line) for line in (root / 'requests.jsonl').read_text().splitlines()]
     assert requests[-1]['resume'] and requests[-1]['session'] == requests[-2]['session']
-    print('PASS: provider defaults, session continuity, restart recovery, failure recovery, deletion, project isolation, read-only reviews')
+
+    # The durable worker outlives a killed Neovim, without an agent service call.
+    def backend(request):
+        command = ['python3', str(REPO / 'scripts' / 'ask_store.py'), '--root', str(root / 'state' / 'nvim' / 'ask')]
+        result = subprocess.run(command, input=json.dumps(request), capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr + result.stdout
+        return json.loads(result.stdout)['result']
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            value = predicate()
+            if value:
+                return value
+            time.sleep(0.02)
+        raise AssertionError('Timed out waiting for crash recovery')
+
+    crash_source = root / 'crash.lua'
+    crash_source.write_text(COMMON + r"""
+open_file()
+key('<S-CR>')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'HOLD_THIS_TURN until released.' })
+key('<CR>')
+vim.wait(60000)
+vim.cmd('qa!')
+""")
+    editor = subprocess.Popen(['nvim', '--headless', '-u', 'NONE', '-i', 'NONE', '-n',
+                              '-c', f'luafile {crash_source}'], env=env, cwd=project,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        wait_for(lambda: (root / 'agent-started').exists())
+        session = (root / 'agent-started').read_text()
+        def recovered():
+            return next((chat for chat in backend(dict(op='load', cwd=str(project))) if chat.get('id') == session), None)
+        current = wait_for(recovered)
+        assert current['active'] and current['started']
+        editor.kill()
+        editor.communicate(timeout=5)
+        # Killing the UI must not release ownership of its still-running CLI.
+        current = recovered()
+        assert current['active'] and current['id'] == session
+        run(env, r"""
+panel()
+vim.api.nvim_win_set_cursor(0, { vim.fn.search('HOLD_THIS_TURN', 'w'), 0 })
+local original = vim.api.nvim_get_current_buf()
+key('<CR>')
+assert(vim.api.nvim_get_current_buf() == original, 'A second turn must not start while the original is running')
+""")
+    finally:
+        if editor.poll() is None:
+            editor.kill()
+            editor.communicate(timeout=5)
+        (root / 'release-agent').touch()
+    wait_for(lambda: (lambda chat: chat and not chat['active'] and not chat.get('interrupted'))(recovered()))
+    run(env, r"""
+vim.ui.select = function(items, options, callback) callback(items[1]) end
+vim.cmd('AgentSearch HOLD_THIS_TURN')
+assert(text():find('codex turn 1:', 1, true))
+key('i')
+submit('Continue the recovered conversation.', 'codex turn 2:')
+vim.cmd.AgentIndexRebuild()
+""")
+    requests = [json.loads(line) for line in (root / 'requests.jsonl').read_text().splitlines()]
+    assert requests[-1]['session'] == session and requests[-1]['resume']
+
+    # A killed supervisor must not release its agent child's inherited lock.
+    (root / 'release-agent').unlink()
+    (root / 'agent-started').unlink()
+    orphan_chat = dict(key='c' * 64, cwd=str(project), agent='codex', created=time.time(),
+                       label='supervisor.lua:1', messages=[
+                           dict(role='You', text='SUPERVISOR_RESTART HOLD_THIS_TURN'), dict(role='Codex')])
+    request = dict(op='run', chat=orphan_chat, revision=0, mode='ask', prompt='HOLD_THIS_TURN')
+    command = ['python3', str(REPO / 'scripts' / 'ask_store.py'), '--root', str(root / 'state' / 'nvim' / 'ask')]
+    worker = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        worker.stdin.write(json.dumps(request))
+        worker.stdin.close()
+        worker.stdin = None
+        assert json.loads(worker.stdout.readline())['type'] == 'accepted'
+        event = json.loads(worker.stdout.readline())
+        assert event['type'] == 'session'
+        orphan_session = event['id']
+        worker.kill()
+        worker.communicate(timeout=5)
+        current = backend(dict(op='get', cwd=str(project), key=orphan_chat['key']))
+        assert current['active'], 'The live agent child must still own the turn lock'
+        rejected = subprocess.run(command, input=json.dumps(request), text=True,
+                                  capture_output=True, env=env, timeout=5)
+        assert rejected.returncode == 1
+        assert 'working in another process' in json.loads(rejected.stdout)['error']
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.communicate(timeout=5)
+        (root / 'release-agent').touch()
+    wait_for(lambda: not backend(dict(op='get', cwd=str(project), key=orphan_chat['key']))['active'])
+    run(env, r"""
+vim.ui.select = function(items, options, callback) callback(items[1]) end
+vim.cmd('AgentSearch SUPERVISOR_RESTART')
+assert(text():find('Interrupted', 1, true))
+key('i')
+submit('Continue after supervisor recovery.', 'codex turn 2:')
+""")
+    requests = [json.loads(line) for line in (root / 'requests.jsonl').read_text().splitlines()]
+    assert requests[-1]['resume'] and requests[-1]['session'] == orphan_session, (orphan_session, requests[-2:])
+
+    # Upstream Arch docks and per-tab panels must coexist with history search.
+    run(env, r"""
+require('ryuux05.arch')
+vim.o.wrap = false
+vim.cmd('Arch notes/design.md')
+local tab, notes = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
+assert(vim.fn.expand('%:t') == 'design.md')
+assert(not vim.wo[notes][0].wrap, 'Docking must preserve the file window options')
+local dock
+for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+  if win ~= notes then dock = win end
+end
+assert(dock and vim.api.nvim_win_get_config(dock).relative == '', 'Arch must keep a docked split')
+assert(vim.wo[dock][0].winbar:find('/ history', 1, true))
+vim.api.nvim_set_current_win(dock)
+vim.ui.select = function(items, options, callback)
+  assert(#items > 0)
+  callback(items[1])
+end
+key('r')
+assert(vim.api.nvim_get_current_win() == dock, 'History selection must reuse the dock')
+key('m')
+assert(vim.api.nvim_win_get_config(dock).relative == '', 'm must not turn a dock into a float')
+vim.ui.input = function(options, callback) callback('SUPERVISOR_RESTART') end
+key('/')
+assert(vim.api.nvim_get_current_win() == dock)
+vim.cmd.tabnew()
+panel()
+local floating = vim.api.nvim_get_current_win()
+assert(floating ~= dock and vim.api.nvim_win_get_config(floating).relative == 'editor')
+vim.api.nvim_set_current_tabpage(tab)
+panel()
+assert(vim.api.nvim_get_current_win() == dock, 'Each tab must retain its own panel window')
+assert(vim.api.nvim_win_is_valid(floating))
+""")
+    print('PASS: sessions, crash recovery, search, Arch docking and per-tab panels')
