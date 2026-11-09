@@ -52,7 +52,7 @@ function M.numbered(buf, l1, l2)
 end
 
 function M.label(path, l1, l2)
-  return vim.fn.fnamemodify(path, ":t") .. ":" .. (l1 == l2 and l1 or l1 .. "-" .. l2)
+  return vim.fn.fnamemodify(path, ":~:.") .. ":" .. (l1 == l2 and l1 or l1 .. "-" .. l2)
 end
 
 local function status(chat)
@@ -94,15 +94,21 @@ end
 
 local function is_float(win) return vim.api.nvim_win_get_config(win).relative ~= "" end
 
-local function panel_title()
-  local busy = #vim.tbl_filter(function(c) return c.busy end, chats)
-  return string.format(" AI · %d session%s · %s ", #chats, #chats == 1 and "" or "s", busy > 0 and busy .. " working…" or "done")
+local function panel_title(win)
+  local row = win and vim.api.nvim_win_get_cursor(win)[1] or 1
+  local index
+  for i, c in ipairs(chats) do
+    if c.first and c.first <= row then index = i end
+  end
+  if not index then return " AI · no sessions " end
+  local c = chats[index]
+  return string.format(" AI #%d/%d · %s · %s · %s ", index, #chats, c.label, names[c.agent], status(c))
 end
 
-local function panel_config()
+local function panel_config(win)
   local config = {
     relative = "editor", width = math.min(60, vim.o.columns - 4), height = 10, footer_pos = "center",
-    title = panel_title(),
+    title = panel_title(win),
     footer = " Enter/i reply · / history · r recent · Esc hide ",
   }
   if panel.big then
@@ -117,8 +123,8 @@ end
 local function update_panel(win)
   -- Window options follow the buffer, so a float would inherit the docked panel's winbar.
   local float = is_float(win)
-  vim.wo[win][0].winbar = float and "" or panel_title() .. "│ Enter/i reply · / history · r recent · Esc hide"
-  if float then vim.api.nvim_win_set_config(win, panel_config()) end
+  vim.wo[win][0].winbar = float and "" or panel_title(win) .. "│ Enter/i reply · / history · r recent · Esc hide"
+  if float then vim.api.nvim_win_set_config(win, panel_config(win)) end
 end
 
 local function chat_in_panel(row)
@@ -132,6 +138,7 @@ local function reveal(row)
   if not win then return end
   vim.api.nvim_win_set_cursor(win, { row, 0 })
   vim.api.nvim_win_call(win, function() vim.cmd("normal! zt") end)
+  update_panel(win)
 end
 
 local function render()
@@ -156,12 +163,12 @@ local function render()
     c.last = #lines
   end
   vim.api.nvim_buf_set_lines(panel.buf, 0, -1, false, lines)
-  for _, w in pairs(panel.wins) do
-    if vim.api.nvim_win_is_valid(w) then update_panel(w) end
-  end
   if win then
     if keep and vim.tbl_contains(chats, keep) then row = keep.first + offset elseif keep then row = keep.first end
     vim.api.nvim_win_set_cursor(win, { math.max(1, math.min(row, #lines)), 0 })
+  end
+  for _, w in pairs(panel.wins) do
+    if vim.api.nvim_win_is_valid(w) then update_panel(w) end
   end
   refresh()
 end
@@ -182,6 +189,7 @@ local function panel_buf()
   if panel.buf and vim.api.nvim_buf_is_valid(panel.buf) then return panel.buf end
   panel.buf = vim.api.nvim_create_buf(false, true)
   vim.bo[panel.buf].filetype = "markdown"
+  vim.api.nvim_create_autocmd("CursorMoved", { buffer = panel.buf, callback = function() update_panel(0) end })
   local function map(lhs, rhs) vim.keymap.set("n", lhs, rhs, { buffer = panel.buf, nowait = true }) end
   map("<Esc>", "<cmd>close<cr>")
   map("/", function()
@@ -252,7 +260,13 @@ local function send(chat, mode, question)
   if mode == "edit" and vim.bo[chat.buf].modified then
     vim.api.nvim_buf_call(chat.buf, function() vim.cmd("silent write") end)
   end
-  show_panel(false)
+  -- A maximized float would cover the code, so it stays hidden until ga or Enter.
+  if panel.big and not vim.t.ask_dock then
+    panel_buf()
+    render()
+  else
+    show_panel(false)
+  end
   reveal(reply.row)
   local request = mode == "edit"
       and ("Make this change by editing the files directly, keeping it minimal: " .. question .. "\nThen briefly summarize what you changed.")
