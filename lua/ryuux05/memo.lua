@@ -4,7 +4,7 @@ local ok, saved = pcall(function() return vim.json.decode(table.concat(vim.fn.re
 local memos = ok and saved or {}
 
 local function set_hl()
-  vim.api.nvim_set_hl(0, "Memo", { bg = "#4a6b3a" })
+  vim.api.nvim_set_hl(0, "Memo", { bg = "#a6e3a1", fg = "#191724" })
   vim.api.nvim_set_hl(0, "MemoNote", { fg = "#a3be8c", italic = true })
 end
 set_hl()
