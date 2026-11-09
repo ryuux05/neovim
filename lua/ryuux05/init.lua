@@ -1,6 +1,6 @@
 require("ryuux05.remap")
 require("ryuux05.set")
-require("ryuux05.packer")
+require("ryuux05.plugins")
 require("ryuux05.undo")
 require("ryuux05.agent")
 require("ryuux05.review")
