@@ -56,14 +56,32 @@ end
 
 vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = set_hl })
 
+local function pr_title(pr)
+  local octo_buf = _G.octo_buffers[pr.bufnr]
+  return octo_buf and octo_buf.node and octo_buf.node.title or ""
+end
+
 -- Vim colors lines that exist only on the left as DiffAdd, so each side gets its own colors.
-vim.api.nvim_create_autocmd("BufWinEnter", { group = group, pattern = "octo://*/review/*/file/*", callback = function(a)
-  if a.match:find("/file/LEFT/", 1, true) then
+vim.api.nvim_create_autocmd("BufWinEnter", { group = group, callback = function(a)
+  local props = vim.b[a.buf].octo_diff_props
+  if not props then return end
+  local review, win = require("octo.reviews").get_current_review(), vim.api.nvim_get_current_win()
+  local layout = review and review.layout
+  if not layout or (win ~= layout.left_winid and win ~= layout.right_winid) then
+    -- A local PR file opened outside the review would inherit the review window's options.
+    vim.wo[0][0].winhighlight, vim.wo[0][0].winbar = "", ""
+    return
+  end
+  local pr, bar = review.pull_request
+  if props.split == "LEFT" then
     vim.wo[0][0].winhighlight = "DiffAdd:ReviewDel,DiffChange:ReviewDel,DiffText:ReviewDelText"
+    bar = string.format(" BASE · %s ", props.path)
   else
     vim.wo[0][0].winhighlight = "DiffAdd:ReviewAdd,DiffChange:ReviewAdd,DiffText:ReviewAddText"
+    bar = string.format(" PR #%d · %s · %s ", pr.number, props.path, pr_title(pr))
   end
-  ask.attach(a.buf, review_chat)
+  vim.wo[0][0].winbar = (bar:gsub("%%", "%%%%"))
+  if a.match:match("^octo://") then ask.attach(a.buf, review_chat) end
 end })
 
 vim.api.nvim_create_autocmd("FileType", { group = group, pattern = "octo_panel", callback = function(a)

@@ -65,6 +65,7 @@ require("lazy").setup({
         default_merge_method = "squash",
         default_delete_branch = false,
         default_to_projects_v2 = true,
+        use_local_fs = true,
         reviews = {
           auto_show_threads = true,
           focus = "right",
