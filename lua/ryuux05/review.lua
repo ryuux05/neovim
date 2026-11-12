@@ -82,6 +82,24 @@ local function pr_title(pr)
   return octo_buf and octo_buf.node and octo_buf.node.title or ""
 end
 
+local function esc(s) return (s:gsub("%%", "%%%%")) end
+
+-- Drawn per redraw so a narrow window shortens the title first; %< then cuts the path, never the PR number.
+local function bar()
+  local win = vim.g.statusline_winid
+  local info = vim.w[win].review_bar
+  if not info then return "" end
+  local head, title = string.format(" PR #%d · ", info.number), info.title
+  local room = vim.api.nvim_win_get_width(win) - vim.fn.strdisplaywidth(head .. info.path .. " ·  ")
+  if vim.fn.strdisplaywidth(title) > room then
+    while title ~= "" and vim.fn.strdisplaywidth(title .. "…") > room do
+      title = vim.fn.strcharpart(title, 0, vim.fn.strchars(title) - 1)
+    end
+    title = title ~= "" and title .. "…" or ""
+  end
+  return head .. "%<" .. esc(info.path) .. (title ~= "" and " · " .. esc(title) or "") .. " "
+end
+
 -- Vim colors lines that exist only on the left as DiffAdd, so each side gets its own colors.
 vim.api.nvim_create_autocmd("BufWinEnter", { group = group, callback = function(a)
   local props = vim.b[a.buf].octo_diff_props
@@ -93,15 +111,15 @@ vim.api.nvim_create_autocmd("BufWinEnter", { group = group, callback = function(
     vim.wo[0][0].winhighlight, vim.wo[0][0].winbar = "", ""
     return
   end
-  local pr, bar = review.pull_request
   if props.split == "LEFT" then
     vim.wo[0][0].winhighlight = "DiffAdd:ReviewDel,DiffChange:ReviewDel,DiffText:ReviewDelText"
-    bar = string.format(" BASE · %s ", props.path)
+    vim.wo[0][0].winbar = esc(" BASE · " .. props.path .. " ")
   else
+    local pr = review.pull_request
     vim.wo[0][0].winhighlight = "DiffAdd:ReviewAdd,DiffChange:ReviewAdd,DiffText:ReviewAddText"
-    bar = string.format(" PR #%d · %s · %s ", pr.number, props.path, pr_title(pr))
+    vim.w.review_bar = { number = pr.number, path = props.path, title = pr_title(pr) }
+    vim.wo[0][0].winbar = "%!v:lua.require'ryuux05.review'.bar()"
   end
-  vim.wo[0][0].winbar = (bar:gsub("%%", "%%%%"))
   if a.match:match("^octo://") then ask.attach(a.buf, review_chat) end
 end })
 
@@ -127,3 +145,5 @@ if vim.fn.argc() == 1 and arg:match("^https://github%.com/[^/]+/[^/]+/pull/%d+")
     vim.api.nvim_buf_delete(placeholder, { force = true })
   end })
 end
+
+return { bar = bar }
