@@ -10,24 +10,45 @@ local function set_hl()
 end
 set_hl()
 
-local function browse_when_loaded(buf, tries)
+local function browse_when_loaded(buf, tries, resume)
   if not vim.api.nvim_buf_is_valid(buf) then return end
   local octo_buf = _G.octo_buffers[buf]
   if octo_buf and octo_buf.node then
     vim.api.nvim_set_current_buf(buf)
-    return vim.cmd("Octo review browse")
+    return vim.cmd("Octo review " .. (resume and "resume" or "browse"))
   end
   if tries == 0 then return vim.notify("Review: PR didn't load", vim.log.levels.ERROR) end
-  vim.defer_fn(function() browse_when_loaded(buf, tries - 1) end, 100)
+  vim.defer_fn(function() browse_when_loaded(buf, tries - 1, resume) end, 100)
 end
 
-local function open(url)
+local function open(url, resume)
   vim.cmd("Octo " .. url)
-  browse_when_loaded(vim.api.nvim_get_current_buf(), 200)
+  browse_when_loaded(vim.api.nvim_get_current_buf(), 200, resume)
 end
 
 local function pr_key(review)
   return review and review.pull_request.repo .. "#" .. review.pull_request.number
+end
+
+local function select_when_loaded(key, path, tries)
+  local review = require("octo.reviews").get_current_review()
+  local files = pr_key(review) == key and review.layout.files or {}
+  for _, file in ipairs(files) do
+    if file.path == path then return review.layout:set_current_file(file) end
+  end
+  if #files == 0 and tries > 0 then
+    vim.defer_fn(function() select_when_loaded(key, path, tries - 1) end, 100)
+  end
+end
+
+-- Octo can't refresh an open review, so fetch the PR again and reopen it on the same file.
+local function reload()
+  local review = require("octo.reviews").get_current_review()
+  local pr, key, file = review.pull_request, pr_key(review), review.layout:get_current_file()
+  require("octo.reviews").close(review.layout.tabpage)
+  pcall(vim.api.nvim_buf_delete, pr.bufnr, { force = true })
+  open(string.format("https://github.com/%s/pull/%d", pr.repo, pr.number), review.id ~= -1)
+  if file then select_when_loaded(key, file.path, 300) end
 end
 
 local function review_chat(buf, l1, l2)
@@ -89,6 +110,12 @@ vim.api.nvim_create_autocmd("FileType", { group = group, pattern = "octo_panel",
 end })
 
 vim.api.nvim_create_user_command("Review", function(o) open(o.args) end, { nargs = 1 })
+
+vim.keymap.set("n", "<C-r>", function()
+  if not require("octo.reviews").get_current_review() then return "<C-r>" end
+  vim.schedule(reload)
+  return ""
+end, { expr = true, desc = "Reload PR review, else redo" })
 
 local arg = vim.fn.argv(0)
 if vim.fn.argc() == 1 and arg:match("^https://github%.com/[^/]+/[^/]+/pull/%d+") then
